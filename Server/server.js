@@ -1,16 +1,38 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const httpServer = createServer(app);
 
-// Настройка Socket.IO
+// Настройка CORS для Socket.IO
 const io = new Server(httpServer, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"]
   }
+});
+
+// Подключаем статические файлы из client/dist
+app.use(express.static(path.join(__dirname, '../../client/dist')));
+
+// API для проверки статуса
+app.get('/api/status', (req, res) => {
+  res.json({
+    status: 'running',
+    game: 'Крестики-Нолики',
+    websocket: true,
+    players: Object.keys(allUsers).length,
+    rooms: allRooms.length
+  });
+});
+
+// Все остальные запросы → на фронтенд
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../../client/dist', 'index.html'));
 });
 
 // Состояние игры
@@ -148,4 +170,9 @@ startServer();
 process.on('SIGTERM', () => {
   console.log('Получен сигнал завершения');
   httpServer.close(() => process.exit(0));
+});
+
+const PORT = process.env.PORT || 3000;
+httpServer.listen(PORT, () => {
+  console.log(`Сервер запущен: http://localhost:${PORT}`);
 });
