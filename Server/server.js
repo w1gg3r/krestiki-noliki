@@ -95,14 +95,13 @@ io.on('connection', (socket) => {
   socket.on('make_move', (data) => {
     const { roomId, cellIndex, symbol } = data;
     const room = activeRooms.get(roomId);
-
+  
     if (room) {
       room.moves.push({ cellIndex, symbol });
-      
-      // Отправляем ход сопернику
+      // Отправляем ход сопернику с символом!
       const opponent = room.players.find(p => p.id !== socket.id);
       if (opponent) {
-        io.to(opponent.id).emit('opponent_move', { cellIndex });
+        io.to(opponent.id).emit('opponent_move', { cellIndex, symbol });
       }
     }
   });
