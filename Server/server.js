@@ -3,60 +3,70 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
 
+// Получаем текущую директорию
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Определяем пути для разработки и продакшена
+const isProduction = process.env.NODE_ENV === 'production';
+const isRender = process.env.RENDER === 'true';
+
+let frontendPath;
+if (isRender) {
+  // Путь для Render
+  frontendPath = path.join('/opt/render/project/Client/dist');
+} else {
+  // Путь для локальной разработки
+  frontendPath = path.join(__dirname, '../Client/dist');
+}
+
+// Логирование для отладки
+console.log('Режим:', isProduction ? 'production' : 'development');
+console.log('Путь к фронтенду:', frontendPath);
+
+// Проверяем существование папки фронтенда
+if (!fs.existsSync(frontendPath)) {
+  console.error('ОШИБКА: Папка фронтенда не найдена по пути:', frontendPath);
+  console.log('Содержимое проекта:', fs.readdirSync(path.dirname(frontendPath)));
+  process.exit(1);
+}
+
+// Инициализация сервера
 const app = express();
 const httpServer = createServer(app);
 
-// Настройка CORS для Socket.IO
+// Настройка Socket.IO
 const io = new Server(httpServer, {
   cors: {
-    origin: "*",
+    origin: "*", // На продакшене замените на конкретные домены
     methods: ["GET", "POST"]
   }
 });
 
-// Подключаем статические файлы из client/dist
-app.use(express.static(path.join(__dirname, '../client/dist')));
+// Статические файлы фронтенда
+app.use(express.static(frontendPath));
 
-// API для проверки статуса
+// Проверка работоспособности API
 app.get('/api/status', (req, res) => {
   res.json({
     status: 'running',
     game: 'Крестики-Нолики',
     websocket: true,
     players: Object.keys(allUsers).length,
-    rooms: allRooms.length
+    rooms: allRooms.length,
+    frontendPath: frontendPath
   });
 });
 
-// Все остальные запросы → на фронтенд
+// Все остальные запросы перенаправляем на фронтенд
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../../client/dist', 'index.html'));
+  res.sendFile(path.join(frontendPath, 'index.html'));
 });
 
 // Состояние игры
 const allUsers = {};
 const allRooms = [];
-
-// Middleware
-app.use(express.json());
-app.use(express.static('public'));
-
-// Роуты HTTP
-app.get('/', (req, res) => {
-  res.status(200).json({
-    status: 'running',
-    game: 'Крестики-Нолики',
-    websocket: true,
-    players: Object.keys(allUsers).length,
-    rooms: allRooms.length
-  });
-});
-
-app.get('/health', (req, res) => {
-  res.status(200).send('OK');
-});
 
 // Логика WebSocket
 io.on('connection', (socket) => {
@@ -142,37 +152,27 @@ io.on('connection', (socket) => {
   });
 });
 
-// Роуты для проверки работоспособности
-app.get('/', (req, res) => res.send('Сервер крестиков-ноликов работает'));
-app.get('/health', (req, res) => res.send('OK'));
-
-// Уникальное решение для Render
-const startServer = (attempt = 1) => {
-  const PORT = attempt === 1 ? (process.env.PORT || 10000) : 0;
+// Запуск сервера
+const PORT = process.env.PORT || 3000;
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`
+  ██╗  ██╗██████╗  ██████╗ 
+  ██║  ██║██╔══██╗██╔════╝ 
+  ███████║██████╔╝██║      
+  ██╔══██║██╔══██╗██║      
+  ██║  ██║██║  ██║╚██████╗ 
+  ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝
   
-  httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`Сервер успешно запущен на порту ${httpServer.address().port}`);
-  }).on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.log(`Порт ${PORT} занят, пробуем случайный порт...`);
-      httpServer.close(() => startServer(attempt + 1));
-    } else {
-      console.error('Фатальная ошибка:', err);
-      process.exit(1);
-    }
-  });
-};
-
-// Запускаем сервер
-startServer();
+  Сервер запущен на порту ${PORT}
+  Фронтенд: ${frontendPath}
+  `);
+});
 
 // Обработка завершения работы
 process.on('SIGTERM', () => {
-  console.log('Получен сигнал завершения');
-  httpServer.close(() => process.exit(0));
-});
-
-const PORT = process.env.PORT || 3000;
-httpServer.listen(PORT, () => {
-  console.log(`Сервер запущен: http://localhost:${PORT}`);
+  console.log('Завершение работы сервера...');
+  httpServer.close(() => {
+    console.log('Сервер остановлен');
+    process.exit(0);
+  });
 });
