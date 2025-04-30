@@ -17,7 +17,7 @@ const App = () => {
 
   // Инициализация сокета
   const initSocket = () => {
-    const socket = io('https://your-render-app.onrender.com', {
+    const socket = io('https://krestiki-noliki-xkam.onrender.com', {
       transports: ['websocket'],
       reconnection: true,
       reconnectionAttempts: 5,
