@@ -94,18 +94,20 @@ const App = () => {
     setCurrentPlayer(playingAs === "cross" ? "circle" : "cross");
   };
 
-  const handlePlayOnline = async () => {
+  const startOnlineGame = async () => {
     const name = await takePlayerName();
     if (!name) return;
-
+  
     setPlayerName(name);
     
-    const newSocket = io(); // или
-
+    const newSocket = io("https://your-render-app.onrender.com");
+  
     newSocket.on("connect", () => {
-      setPlayOnline(true);
-      setStatus("connected");
-      newSocket.emit("request_to_play", { playerName: name });
+      // Отправляем только строку с именем
+      newSocket.emit("request_to_play", name); // Исправлено здесь
+      
+      // Или если сервер ожидает объект:
+      // newSocket.emit("request_to_play", { playerName: name }); 
     });
 
     newSocket.on("opponent_found", (data) => {

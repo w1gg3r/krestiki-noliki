@@ -44,23 +44,32 @@ io.on('connection', (socket) => {
   console.log(`Новый игрок подключен: ${socket.id}`);
 
   socket.on('request_to_play', (playerName) => {
-    console.log(`Поиск соперника для: ${playerName}`);
+    // Добавляем проверку на тип данных
+    const name = typeof playerName === 'object' ? playerName.playerName : playerName;
+    
+    if (!name || typeof name !== 'string') {
+      console.error('Неверный формат имени:', playerName);
+      socket.emit('error', 'Неверное имя игрока');
+      return;
+    }
+
+    console.log(`Поиск соперника для: ${name}`);
 
     if (playersQueue.length > 0) {
-      // Найден соперник
       const opponent = playersQueue.pop();
       const roomId = `room_${Date.now()}`;
       
-      // Создаем комнату
       activeRooms.set(roomId, {
         players: [
-          { id: socket.id, name: playerName, symbol: 'X' },
+          { id: socket.id, name, symbol: 'X' },
           { id: opponent.id, name: opponent.name, symbol: 'O' }
         ],
         moves: []
       });
 
-      // Уведомляем игроков
+      // Улучшенное логирование
+      console.log(`Создана комната ${roomId} между ${name} (X) и ${opponent.name} (O)`);
+
       socket.emit('opponent_found', { 
         opponentName: opponent.name,
         symbol: 'X',
@@ -68,21 +77,18 @@ io.on('connection', (socket) => {
       });
 
       opponent.socket.emit('opponent_found', {
-        opponentName: playerName,
+        opponentName: name,
         symbol: 'O',
         roomId
       });
-
-      console.log(`Игра началась в комнате ${roomId}`);
     } else {
-      // Добавляем в очередь ожидания
       playersQueue.push({
         id: socket.id,
-        name: playerName,
+        name,
         socket: socket
       });
       socket.emit('waiting_for_opponent');
-      console.log(`Игрок ${playerName} ожидает соперника`);
+      console.log(`Игрок ${name} добавлен в очередь ожидания`);
     }
   });
 
