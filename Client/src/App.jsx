@@ -157,7 +157,7 @@ const App = () => {
   if (!playOnline) {
     return (
       <div className="main-div">
-        <button onClick={playOnline} className="playOnline">
+        <button onClick={handlePlayOnline} className="playOnline">
           Играть онлайн
         </button>
       </div>
