@@ -17,7 +17,7 @@ const io = new Server(httpServer, {
 });
 
 // Подключаем статические файлы из client/dist
-app.use(express.static(path.join(__dirname, '../../client/dist')));
+app.use(express.static(path.join(__dirname, '../client/dist')));
 
 // API для проверки статуса
 app.get('/api/status', (req, res) => {
