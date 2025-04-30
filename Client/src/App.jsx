@@ -4,67 +4,48 @@ import Square from "./Square/Square";
 import { io } from "socket.io-client";
 import Swal from "sweetalert2";
 
-const renderFrom = [
-  [1, 2, 3],
-  [4, 5, 6],
-  [7, 8, 9],
+const initialGameState = [
+  [null, null, null],
+  [null, null, null],
+  [null, null, null]
 ];
 
 const App = () => {
-  const [gameState, setGameState] = useState(renderFrom);
-  const [currentPlayer, setCurrentPlayer] = useState("circle");
-  const [finishedState, setFinishetState] = useState(false);
-  const [finishedArrayState, setFinishedArrayState] = useState([]);
+  const [gameState, setGameState] = useState(initialGameState);
+  const [currentPlayer, setCurrentPlayer] = useState("cross");
+  const [finishedState, setFinishedState] = useState(null);
   const [playOnline, setPlayOnline] = useState(false);
   const [socket, setSocket] = useState(null);
   const [playerName, setPlayerName] = useState("");
-  const [opponentName, setOpponentName] = useState(null);
+  const [opponentName, setOpponentName] = useState("");
   const [playingAs, setPlayingAs] = useState(null);
+  const [status, setStatus] = useState("disconnected");
 
   const checkWinner = () => {
-    // Проверка строк
-    for (let row = 0; row < gameState.length; row++) {
-      if (
-        gameState[row][0] === gameState[row][1] &&
-        gameState[row][1] === gameState[row][2]
-      ) {
-        setFinishedArrayState([row * 3 + 0, row * 3 + 1, row * 3 + 2]);
-        return gameState[row][0];
+    // Проверка строк и столбцов
+    for (let i = 0; i < 3; i++) {
+      // Проверка строк
+      if (gameState[i][0] && gameState[i][0] === gameState[i][1] && gameState[i][1] === gameState[i][2]) {
+        return gameState[i][0];
       }
-    }
-
-    // Проверка столбцов
-    for (let col = 0; col < gameState.length; col++) {
-      if (
-        gameState[0][col] === gameState[1][col] &&
-        gameState[1][col] === gameState[2][col]
-      ) {
-        setFinishedArrayState([0 * 3 + col, 1 * 3 + col, 2 * 3 + col]);
-        return gameState[0][col];
+      // Проверка столбцов
+      if (gameState[0][i] && gameState[0][i] === gameState[1][i] && gameState[1][i] === gameState[2][i]) {
+        return gameState[0][i];
       }
     }
 
     // Проверка диагоналей
-    if (
-      gameState[0][0] === gameState[1][1] &&
-      gameState[1][1] === gameState[2][2]
-    ) {
+    if (gameState[0][0] && gameState[0][0] === gameState[1][1] && gameState[1][1] === gameState[2][2]) {
       return gameState[0][0];
     }
-
-    if (
-      gameState[0][2] === gameState[1][1] &&
-      gameState[1][1] === gameState[2][0]
-    ) {
+    if (gameState[0][2] && gameState[0][2] === gameState[1][1] && gameState[1][1] === gameState[2][0]) {
       return gameState[0][2];
     }
 
     // Проверка на ничью
-    const isDrawMatch = gameState.flat().every((e) => {
-      if (e === "circle" || e === "cross") return true;
-    });
-
-    if (isDrawMatch) return "draw";
+    if (gameState.flat().every(cell => cell !== null)) {
+      return "draw";
+    }
 
     return null;
   };
@@ -72,7 +53,10 @@ const App = () => {
   useEffect(() => {
     const winner = checkWinner();
     if (winner) {
-      setFinishetState(winner);
+      setFinishedState(winner);
+      if (socket && winner !== "draw") {
+        socket.emit("game_over", { winner });
+      }
     }
   }, [gameState]);
 
@@ -82,79 +66,100 @@ const App = () => {
       input: "text",
       showCancelButton: true,
       inputValidator: (value) => {
-        if (!value) {
-          return "Пожалуйста, введите имя!";
-        }
-      },
+        if (!value) return "Пожалуйста, введите имя!";
+      }
     });
 
-    return result;
+    if (result.isConfirmed) {
+      return result.value;
+    }
+    return null;
   };
 
-  socket?.on("opponentLeftMatch", () => {
-    setFinishetState("opponentLeftMatch");
-  });
+  const handleSquareClick = (rowIndex, colIndex) => {
+    if (finishedState || gameState[rowIndex][colIndex] || currentPlayer !== playingAs) return;
 
-  socket?.on("playerMoveFromServer", (data) => {
-    const id = data.state.id;
-    setGameState((prevState) => {
-      let newState = [...prevState];
-      const rowIndex = Math.floor(id / 3);
-      const colIndex = id % 3;
-      newState[rowIndex][colIndex] = data.state.sign;
-      return newState;
-    });
-    setCurrentPlayer(data.state.sign === "circle" ? "cross" : "circle");
-  });
+    const newGameState = [...gameState];
+    newGameState[rowIndex][colIndex] = playingAs;
+    setGameState(newGameState);
 
-  socket?.on("connect", function () {
-    setPlayOnline(true);
-  });
-
-  socket?.on("OpponentNotFound", function () {
-    setOpponentName(false);
-  });
-
-  socket?.on("OpponentFound", function (data) {
-    setPlayingAs(data.playingAs);
-    setOpponentName(data.opponentName);
-  });
-
-  async function playOnlineClick() {
-    const result = await takePlayerName();
-
-    if (!result.isConfirmed) {
-      return;
+    if (socket) {
+      socket.emit("make_move", {
+        row: rowIndex,
+        col: colIndex,
+        symbol: playingAs
+      });
     }
 
-    const username = result.value;
-    setPlayerName(username);
+    setCurrentPlayer(playingAs === "cross" ? "circle" : "cross");
+  };
 
-    const newSocket = io("http://localhost:3000", {
-      autoConnect: true,
+  const handlePlayOnline = async () => {
+    const name = await takePlayerName();
+    if (!name) return;
+
+    setPlayerName(name);
+    
+    const newSocket = io("https://your-render-app.onrender.com", {
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000
     });
 
-    newSocket?.emit("request_to_play", {
-      playerName: username,
+    newSocket.on("connect", () => {
+      setPlayOnline(true);
+      setStatus("connected");
+      newSocket.emit("request_to_play", { playerName: name });
+    });
+
+    newSocket.on("opponent_found", (data) => {
+      setOpponentName(data.opponentName);
+      setPlayingAs(data.symbol);
+      setStatus("playing");
+    });
+
+    newSocket.on("opponent_move", ({ row, col }) => {
+      setGameState(prev => {
+        const newState = [...prev];
+        newState[row][col] = playingAs === "cross" ? "circle" : "cross";
+        return newState;
+      });
+      setCurrentPlayer(playingAs);
+    });
+
+    newSocket.on("opponent_left", () => {
+      setFinishedState("opponentLeftMatch");
+      setStatus("disconnected");
+    });
+
+    newSocket.on("disconnect", () => {
+      setStatus("disconnected");
+    });
+
+    newSocket.on("connect_error", (err) => {
+      console.error("Ошибка подключения:", err);
+      Swal.fire("Ошибка", "Не удалось подключиться к серверу", "error");
     });
 
     setSocket(newSocket);
-  }
+  };
+
+  const resetGame = () => {
+    setGameState(initialGameState);
+    setFinishedState(null);
+    setCurrentPlayer("cross");
+    if (socket) {
+      socket.emit("request_to_play", { playerName });
+      setStatus("waiting");
+    }
+  };
 
   if (!playOnline) {
     return (
       <div className="main-div">
-        <button onClick={playOnlineClick} className="playOnline">
+        <button onClick={playOnline} className="playOnline">
           Играть онлайн
         </button>
-      </div>
-    );
-  }
-
-  if (playOnline && !opponentName) {
-    return (
-      <div className="waiting">
-        <p>Ожидание соперника...</p>
       </div>
     );
   }
@@ -162,62 +167,58 @@ const App = () => {
   return (
     <div className="main-div">
       <div className="move-detection">
-        <div
-          className={`left ${
-            currentPlayer === playingAs ? "current-move-" + currentPlayer : ""
-          }`}
-        >
-          {playerName}
+        <div className={`left ${currentPlayer === "cross" ? "active" : ""}`}>
+          {playerName} (X)
         </div>
-        <div
-          className={`right ${
-            currentPlayer !== playingAs ? "current-move-" + currentPlayer : ""
-          }`}
-        >
-          {opponentName}
+        <div className={`right ${currentPlayer === "circle" ? "active" : ""}`}>
+          {opponentName || "Ожидание..."} (O)
         </div>
       </div>
-      <div>
-        <h1 className="game-heading water-background">Крестики-Нолики</h1>
-        <div className="square-wrapper">
-          {gameState.map((arr, rowIndex) =>
-            arr.map((e, colIndex) => {
-              return (
-                <Square
-                  socket={socket}
-                  playingAs={playingAs}
-                  gameState={gameState}
-                  finishedArrayState={finishedArrayState}
-                  finishedState={finishedState}
-                  currentPlayer={currentPlayer}
-                  setCurrentPlayer={setCurrentPlayer}
-                  setGameState={setGameState}
-                  id={rowIndex * 3 + colIndex}
-                  key={rowIndex * 3 + colIndex}
-                  currentElement={e}
-                />
-              );
-            })
-          )}
+      
+      <h1 className="game-heading">Крестики-Нолики</h1>
+      
+      {status === "waiting" && (
+        <div className="waiting">
+          <p>Поиск соперника...</p>
         </div>
-        {finishedState &&
-          finishedState !== "opponentLeftMatch" &&
-          finishedState !== "draw" && (
-            <h3 className="finished-state">
-              {finishedState === playingAs ? "Вы " : finishedState} победили!
-            </h3>
-          )}
-        {finishedState &&
-          finishedState !== "opponentLeftMatch" &&
-          finishedState === "draw" && (
-            <h3 className="finished-state">Ничья!</h3>
-          )}
-      </div>
-      {!finishedState && opponentName && (
-        <h2>Вы играете против {opponentName}</h2>
       )}
-      {finishedState && finishedState === "opponentLeftMatch" && (
-        <h2>Вы победили, соперник покинул игру</h2>
+
+      {status === "playing" && (
+        <div className="board">
+          {gameState.map((row, rowIndex) => (
+            <div key={rowIndex} className="board-row">
+              {row.map((cell, colIndex) => (
+                <Square
+                  key={`${rowIndex}-${colIndex}`}
+                  value={cell}
+                  onClick={() => handleSquareClick(rowIndex, colIndex)}
+                  disabled={finishedState || cell !== null || currentPlayer !== playingAs}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {finishedState === "opponentLeftMatch" && (
+        <div className="game-over">
+          <h2>Соперник покинул игру</h2>
+          <button onClick={resetGame}>Играть снова</button>
+        </div>
+      )}
+
+      {finishedState === "draw" && (
+        <div className="game-over">
+          <h2>Ничья!</h2>
+          <button onClick={resetGame}>Играть снова</button>
+        </div>
+      )}
+
+      {finishedState && finishedState !== "draw" && finishedState !== "opponentLeftMatch" && (
+        <div className="game-over">
+          <h2>{finishedState === playingAs ? "Вы победили!" : "Вы проиграли!"}</h2>
+          <button onClick={resetGame}>Играть снова</button>
+        </div>
       )}
     </div>
   );
