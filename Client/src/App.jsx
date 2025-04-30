@@ -32,7 +32,12 @@ const App = () => {
     if (onlineMode && !socket) {
       console.log("Attempting to connect to socket...");
       // Замените URL на адрес вашего сервера Socket.IO
-      const newSocket = io("http://localhost:3000");
+      const socket = io("https://krestiki-noliki-xkam.onrender.com", {
+        transports: ["websocket"], // Принудительно используем WebSocket
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000
+      });
       setSocket(newSocket);
 
       // Важно: не добавляйте слушатели здесь, добавьте их ниже,
