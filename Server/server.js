@@ -8,38 +8,45 @@ import fs from 'fs';
 // Получаем текущую директорию
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Определяем пути для разработки и продакшена
-const isProduction = process.env.NODE_ENV === 'production';
-const isRender = process.env.RENDER === 'true';
+// Функция для поиска фронтенда
+const findFrontendPath = () => {
+  const possiblePaths = [
+    // Пути для Render
+    '/opt/render/project/Client/dist',
+    '/opt/render/project/client/dist',
+    // Пути для локальной разработки
+    path.join(__dirname, '../Client/dist'),
+    path.join(__dirname, '../../Client/dist'),
+    path.join(__dirname, 'Client/dist')
+  ];
 
-let frontendPath;
-if (isRender) {
-  // Путь для Render
-  frontendPath = path.join('/opt/render/project/Client/dist');
-} else {
-  // Путь для локальной разработки
-  frontendPath = path.join(__dirname, '../Client/dist');
-}
+  for (const possiblePath of possiblePaths) {
+    try {
+      const fullPath = path.resolve(possiblePath);
+      if (fs.existsSync(fullPath)) {
+        console.log('Найден фронтенд по пути:', fullPath);
+        return fullPath;
+      }
+    } catch (err) {
+      console.log('Проверка пути:', possiblePath, 'не найдена');
+    }
+  }
 
-// Логирование для отладки
-console.log('Режим:', isProduction ? 'production' : 'development');
-console.log('Путь к фронтенду:', frontendPath);
-
-// Проверяем существование папки фронтенда
-if (!fs.existsSync(frontendPath)) {
-  console.error('ОШИБКА: Папка фронтенда не найдена по пути:', frontendPath);
-  console.log('Содержимое проекта:', fs.readdirSync(path.dirname(frontendPath)));
+  console.error('Фронтенд не найден! Проверенные пути:', possiblePaths);
+  console.log('Содержимое корня проекта:', fs.readdirSync(path.dirname(__dirname)));
   process.exit(1);
-}
+};
+
+const frontendPath = findFrontendPath();
 
 // Инициализация сервера
 const app = express();
 const httpServer = createServer(app);
 
-// Настройка Socket.IO
+// Настройка CORS для Socket.IO
 const io = new Server(httpServer, {
   cors: {
-    origin: "*", // На продакшене замените на конкретные домены
+    origin: "*",
     methods: ["GET", "POST"]
   }
 });
@@ -47,19 +54,16 @@ const io = new Server(httpServer, {
 // Статические файлы фронтенда
 app.use(express.static(frontendPath));
 
-// Проверка работоспособности API
+// API для проверки статуса
 app.get('/api/status', (req, res) => {
   res.json({
     status: 'running',
     game: 'Крестики-Нолики',
-    websocket: true,
-    players: Object.keys(allUsers).length,
-    rooms: allRooms.length,
-    frontendPath: frontendPath
+    websocket: true
   });
 });
 
-// Все остальные запросы перенаправляем на фронтенд
+// Все остальные запросы → на фронтенд
 app.get('*', (req, res) => {
   res.sendFile(path.join(frontendPath, 'index.html'));
 });
@@ -156,12 +160,12 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`
-  ██╗  ██╗██████╗  ██████╗ 
-  ██║  ██║██╔══██╗██╔════╝ 
-  ███████║██████╔╝██║      
-  ██╔══██║██╔══██╗██║      
-  ██║  ██║██║  ██║╚██████╗ 
-  ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝
+  ██╗  ██╗ ██████╗ ███████╗
+  ██║  ██║██╔═══██╗██╔════╝
+  ███████║██║   ██║███████╗
+  ██╔══██║██║   ██║╚════██║
+  ██║  ██║╚██████╔╝███████║
+  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝
   
   Сервер запущен на порту ${PORT}
   Фронтенд: ${frontendPath}
@@ -171,8 +175,5 @@ httpServer.listen(PORT, '0.0.0.0', () => {
 // Обработка завершения работы
 process.on('SIGTERM', () => {
   console.log('Завершение работы сервера...');
-  httpServer.close(() => {
-    console.log('Сервер остановлен');
-    process.exit(0);
-  });
+  httpServer.close(() => process.exit(0));
 });
