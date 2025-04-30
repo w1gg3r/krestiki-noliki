@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import io from 'socket.io-client';
-import Square from './Square'; // Убедитесь, что путь к Square.jsx правильный
+import Square from './Square/Square'; // Убедитесь, что путь к Square.jsx правильный
 import './App.css'; // Убедитесь, что у вас есть App.css для стилей
 // Предполагается, что у вас есть также Square.css, как использовалось ранее
 
