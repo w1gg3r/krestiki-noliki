@@ -5,11 +5,11 @@ const httpServer = createServer();
 const io = new Server(httpServer, {
   cors: {
     origin: [
-      "http://localhost:5174", // для разработки
-      "https://your-frontend-url.onrender.com", // замени после деплоя
+      "http://localhost:5174",  // для разработки
+      "https://your-client-url.vercel.app"  // после деплоя клиента
     ],
-    methods: ["GET", "POST"],
-  },
+    methods: ["GET", "POST"]
+  }
 });
 
 const allUsers = {};
@@ -90,3 +90,8 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+require('http').createServer((req, res) => {
+  res.writeHead(200);
+  res.end('Server is alive');
+}).listen(process.env.PORT || 3000);
