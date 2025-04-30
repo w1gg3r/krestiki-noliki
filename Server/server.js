@@ -5,50 +5,30 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 
-// Получаем текущую директорию
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Функция для поиска фронтенда
-const findFrontendPath = () => {
+// Автоматическое определение путей к фронтенду
+const frontendPath = (() => {
   const possiblePaths = [
-    // Пути для Render
     '/opt/render/project/Client/dist',
     '/opt/render/project/client/dist',
     '/opt/render/project/src/Client/dist',
-    // Пути для локальной разработки
     path.join(__dirname, '../Client/dist'),
-    path.join(__dirname, '../../Client/dist'),
-    path.join(__dirname, 'Client/dist')
+    path.join(__dirname, '../../Client/dist')
   ];
 
-  for (const possiblePath of possiblePaths) {
-    try {
-      const fullPath = path.resolve(possiblePath);
-      if (fs.existsSync(fullPath)) {
-        console.log('Найден фронтенд по пути:', fullPath);
-        return fullPath;
-      }
-    } catch (err) {
-      console.log('Проверка пути:', possiblePath, 'не найдена');
+  for (const path of possiblePaths) {
+    if (fs.existsSync(path)) {
+      console.log('Фронтенд найден по пути:', path);
+      return path;
     }
   }
+  throw new Error('Фронтенд не найден');
+})();
 
-  console.error('Фронтенд не найден! Проверенные пути:', possiblePaths);
-  try {
-    console.log('Содержимое корня проекта:', fs.readdirSync(path.dirname(__dirname)));
-  } catch (err) {
-    console.error('Ошибка при чтении корня проекта:', err);
-  }
-  process.exit(1);
-};
-
-const frontendPath = findFrontendPath();
-
-// Инициализация сервера
 const app = express();
 const httpServer = createServer(app);
 
-// Настройка CORS для Socket.IO
 const io = new Server(httpServer, {
   cors: {
     origin: "*",
@@ -56,131 +36,115 @@ const io = new Server(httpServer, {
   }
 });
 
+// Состояние игры
+const playersQueue = [];
+const activeRooms = new Map();
+
+io.on('connection', (socket) => {
+  console.log(`Новый игрок подключен: ${socket.id}`);
+
+  socket.on('request_to_play', (playerName) => {
+    console.log(`Поиск соперника для: ${playerName}`);
+
+    if (playersQueue.length > 0) {
+      // Найден соперник
+      const opponent = playersQueue.pop();
+      const roomId = `room_${Date.now()}`;
+      
+      // Создаем комнату
+      activeRooms.set(roomId, {
+        players: [
+          { id: socket.id, name: playerName, symbol: 'X' },
+          { id: opponent.id, name: opponent.name, symbol: 'O' }
+        ],
+        moves: []
+      });
+
+      // Уведомляем игроков
+      socket.emit('opponent_found', { 
+        opponentName: opponent.name,
+        symbol: 'X',
+        roomId
+      });
+
+      opponent.socket.emit('opponent_found', {
+        opponentName: playerName,
+        symbol: 'O',
+        roomId
+      });
+
+      console.log(`Игра началась в комнате ${roomId}`);
+    } else {
+      // Добавляем в очередь ожидания
+      playersQueue.push({
+        id: socket.id,
+        name: playerName,
+        socket: socket
+      });
+      socket.emit('waiting_for_opponent');
+      console.log(`Игрок ${playerName} ожидает соперника`);
+    }
+  });
+
+  socket.on('make_move', (data) => {
+    const { roomId, cellIndex, symbol } = data;
+    const room = activeRooms.get(roomId);
+
+    if (room) {
+      room.moves.push({ cellIndex, symbol });
+      
+      // Отправляем ход сопернику
+      const opponent = room.players.find(p => p.id !== socket.id);
+      if (opponent) {
+        io.to(opponent.id).emit('opponent_move', { cellIndex });
+      }
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`Игрок отключился: ${socket.id}`);
+    
+    // Удаляем из очереди
+    const index = playersQueue.findIndex(p => p.id === socket.id);
+    if (index !== -1) {
+      playersQueue.splice(index, 1);
+    }
+
+    // Уведомляем соперника о выходе
+    for (const [roomId, room] of activeRooms) {
+      const player = room.players.find(p => p.id === socket.id);
+      if (player) {
+        const opponent = room.players.find(p => p.id !== socket.id);
+        if (opponent) {
+          io.to(opponent.id).emit('opponent_left');
+        }
+        activeRooms.delete(roomId);
+        break;
+      }
+    }
+  });
+});
+
 // Статические файлы фронтенда
 app.use(express.static(frontendPath));
 
-// API для проверки статуса
+// API проверки статуса
 app.get('/api/status', (req, res) => {
   res.json({
     status: 'running',
-    game: 'Крестики-Нолики',
-    websocket: true,
-    frontendPath: frontendPath
+    playersInQueue: playersQueue.length,
+    activeGames: activeRooms.size
   });
 });
 
 // Все остальные запросы → на фронтенд
 app.get('*', (req, res) => {
-  console.log('Запрос к:', req.path);
   res.sendFile(path.join(frontendPath, 'index.html'));
 });
 
-// Состояние игры
-const allUsers = {};
-const allRooms = [];
-
-// Логика WebSocket
-io.on('connection', (socket) => {
-  console.log(`Новое подключение: ${socket.id}`);
-  
-  allUsers[socket.id] = {
-    socket: socket,
-    online: true,
-    playing: false
-  };
-
-  socket.on('request_to_play', (data) => {
-    const currentUser = allUsers[socket.id];
-    currentUser.playerName = data.playerName;
-    currentUser.playing = true;
-
-    let opponentPlayer;
-
-    for (const key in allUsers) {
-      const user = allUsers[key];
-      if (user.online && !user.playing && socket.id !== key) {
-        opponentPlayer = user;
-        break;
-      }
-    }
-
-    if (opponentPlayer) {
-      const room = {
-        player1: opponentPlayer,
-        player2: currentUser,
-        id: `room_${allRooms.length + 1}`
-      };
-      
-      allRooms.push(room);
-
-      currentUser.socket.emit('OpponentFound', {
-        opponentName: opponentPlayer.playerName,
-        playingAs: "circle",
-        roomId: room.id
-      });
-
-      opponentPlayer.socket.emit('OpponentFound', {
-        opponentName: currentUser.playerName,
-        playingAs: "cross",
-        roomId: room.id
-      });
-
-      currentUser.socket.on('playerMoveFromClient', (data) => {
-        opponentPlayer.socket.emit('playerMoveFromServer', data);
-      });
-
-      opponentPlayer.socket.on('playerMoveFromClient', (data) => {
-        currentUser.socket.emit('playerMoveFromServer', data);
-      });
-    } else {
-      currentUser.socket.emit('OpponentNotFound');
-    }
-  });
-
-  socket.on('disconnect', () => {
-    console.log(`Отключение: ${socket.id}`);
-    const currentUser = allUsers[socket.id];
-    if (currentUser) {
-      currentUser.online = false;
-      currentUser.playing = false;
-
-      for (let index = 0; index < allRooms.length; index++) {
-        const { player1, player2 } = allRooms[index];
-
-        if (player1.socket.id === socket.id) {
-          player2.socket.emit('opponentLeftMatch');
-          allRooms.splice(index, 1);
-          break;
-        }
-
-        if (player2.socket.id === socket.id) {
-          player1.socket.emit('opponentLeftMatch');
-          allRooms.splice(index, 1);
-          break;
-        }
-      }
-    }
-  });
-});
-
-// Запуск сервера
 const PORT = process.env.PORT || 3000;
-httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`
-  ██╗  ██╗ ██████╗ ███████╗
-  ██║  ██║██╔═══██╗██╔════╝
-  ███████║██║   ██║███████╗
-  ██╔══██║██║   ██║╚════██║
-  ██║  ██║╚██████╔╝███████║
-  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝
-  
-  Сервер запущен на порту ${PORT}
-  Фронтенд: ${frontendPath}
-  `);
-});
-
-// Обработка завершения работы
-process.on('SIGTERM', () => {
-  console.log('Завершение работы сервера...');
-  httpServer.close(() => process.exit(0));
+httpServer.listen(PORT, () => {
+  console.log(`Сервер запущен на порту ${PORT}`);
+  console.log(`Ожидающие игроки: ${playersQueue.length}`);
+  console.log(`Активные игры: ${activeRooms.size}`);
 });
