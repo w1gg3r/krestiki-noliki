@@ -14,6 +14,7 @@ const findFrontendPath = () => {
     // Пути для Render
     '/opt/render/project/Client/dist',
     '/opt/render/project/client/dist',
+    '/opt/render/project/src/Client/dist',
     // Пути для локальной разработки
     path.join(__dirname, '../Client/dist'),
     path.join(__dirname, '../../Client/dist'),
@@ -33,15 +34,15 @@ const findFrontendPath = () => {
   }
 
   console.error('Фронтенд не найден! Проверенные пути:', possiblePaths);
-  console.log('Содержимое корня проекта:', fs.readdirSync(path.dirname(__dirname)));
+  try {
+    console.log('Содержимое корня проекта:', fs.readdirSync(path.dirname(__dirname)));
+  } catch (err) {
+    console.error('Ошибка при чтении корня проекта:', err);
+  }
   process.exit(1);
 };
 
-const path = require('path');
-let frontendPath = path.join(__dirname, '..', 'Client', 'dist');
-if (!fs.existsSync(frontendPath)) {
-  frontendPath = path.join(__dirname, '..', 'src', 'Client', 'dist');
-}
+const frontendPath = findFrontendPath();
 
 // Инициализация сервера
 const app = express();
@@ -63,12 +64,14 @@ app.get('/api/status', (req, res) => {
   res.json({
     status: 'running',
     game: 'Крестики-Нолики',
-    websocket: true
+    websocket: true,
+    frontendPath: frontendPath
   });
 });
 
 // Все остальные запросы → на фронтенд
 app.get('*', (req, res) => {
+  console.log('Запрос к:', req.path);
   res.sendFile(path.join(frontendPath, 'index.html'));
 });
 
