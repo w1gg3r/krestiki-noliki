@@ -1,11 +1,54 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
 
+// Получаем текущую директорию
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Функция для поиска фронтенда
+const findFrontendPath = () => {
+  const possiblePaths = [
+    // Пути для Render
+    '/opt/render/project/Client/dist',
+    '/opt/render/project/client/dist',
+    '/opt/render/project/src/Client/dist',
+    // Пути для локальной разработки
+    path.join(__dirname, '../Client/dist'),
+    path.join(__dirname, '../../Client/dist'),
+    path.join(__dirname, 'Client/dist')
+  ];
+
+  for (const possiblePath of possiblePaths) {
+    try {
+      const fullPath = path.resolve(possiblePath);
+      if (fs.existsSync(fullPath)) {
+        console.log('Найден фронтенд по пути:', fullPath);
+        return fullPath;
+      }
+    } catch (err) {
+      console.log('Проверка пути:', possiblePath, 'не найдена');
+    }
+  }
+
+  console.error('Фронтенд не найден! Проверенные пути:', possiblePaths);
+  try {
+    console.log('Содержимое корня проекта:', fs.readdirSync(path.dirname(__dirname)));
+  } catch (err) {
+    console.error('Ошибка при чтении корня проекта:', err);
+  }
+  process.exit(1);
+};
+
+const frontendPath = findFrontendPath();
+
+// Инициализация сервера
 const app = express();
 const httpServer = createServer(app);
-const PORT = process.env.PORT || 3000;
 
+// Настройка CORS для Socket.IO
 const io = new Server(httpServer, {
   cors: {
     origin: "*",
@@ -13,114 +56,131 @@ const io = new Server(httpServer, {
   }
 });
 
-const gameState = {
-  board: Array(9).fill(null),
-  currentPlayer: 'X',
-  players: {},
-  waitingPlayer: null
-};
+// Статические файлы фронтенда
+app.use(express.static(frontendPath));
 
-io.on('connection', (socket) => {
-  console.log('Новое подключение:', socket.id);
-
-  socket.on('join_game', (playerName) => {
-    if (gameState.waitingPlayer) {
-      // Найден второй игрок
-      gameState.players[socket.id] = {
-        name: playerName,
-        mark: 'O'
-      };
-      
-      gameState.players[gameState.waitingPlayer.id].mark = 'X';
-      
-      // Отправляем метки игрокам
-      socket.emit('assign_mark', 'O');
-      io.to(gameState.waitingPlayer.id).emit('assign_mark', 'X');
-      
-      // Уведомляем о начале игры
-      socket.emit('game_start', { name: gameState.waitingPlayer.name });
-      io.to(gameState.waitingPlayer.id).emit('game_start', { name: playerName });
-      
-      // Отправляем начальное состояние
-      sendGameState();
-      
-      gameState.waitingPlayer = null;
-    } else {
-      // Первый игрок
-      gameState.players[socket.id] = {
-        name: playerName,
-        mark: null
-      };
-      gameState.waitingPlayer = {
-        id: socket.id,
-        name: playerName
-      };
-    }
+// API для проверки статуса
+app.get('/api/status', (req, res) => {
+  res.json({
+    status: 'running',
+    game: 'Крестики-Нолики',
+    websocket: true,
+    frontendPath: frontendPath
   });
+});
 
-  socket.on('make_move', (index) => {
-    if (
-      index >= 0 && index < 9 &&
-      gameState.board[index] === null &&
-      gameState.players[socket.id]?.mark === gameState.currentPlayer
-    ) {
-      gameState.board[index] = gameState.currentPlayer;
-      
-      const winner = checkWinner();
-      if (winner) {
-        io.emit('game_over', winner);
-        resetGame();
-        return;
+// Все остальные запросы → на фронтенд
+app.get('*', (req, res) => {
+  console.log('Запрос к:', req.path);
+  res.sendFile(path.join(frontendPath, 'index.html'));
+});
+
+// Состояние игры
+const allUsers = {};
+const allRooms = [];
+
+// Логика WebSocket
+io.on('connection', (socket) => {
+  console.log(`Новое подключение: ${socket.id}`);
+  
+  allUsers[socket.id] = {
+    socket: socket,
+    online: true,
+    playing: false
+  };
+
+  socket.on('request_to_play', (data) => {
+    const currentUser = allUsers[socket.id];
+    currentUser.playerName = data.playerName;
+    currentUser.playing = true;
+
+    let opponentPlayer;
+
+    for (const key in allUsers) {
+      const user = allUsers[key];
+      if (user.online && !user.playing && socket.id !== key) {
+        opponentPlayer = user;
+        break;
       }
+    }
+
+    if (opponentPlayer) {
+      const room = {
+        player1: opponentPlayer,
+        player2: currentUser,
+        id: `room_${allRooms.length + 1}`
+      };
       
-      gameState.currentPlayer = gameState.currentPlayer === 'X' ? 'O' : 'X';
-      sendGameState();
+      allRooms.push(room);
+
+      currentUser.socket.emit('OpponentFound', {
+        opponentName: opponentPlayer.playerName,
+        playingAs: "circle",
+        roomId: room.id
+      });
+
+      opponentPlayer.socket.emit('OpponentFound', {
+        opponentName: currentUser.playerName,
+        playingAs: "cross",
+        roomId: room.id
+      });
+
+      currentUser.socket.on('playerMoveFromClient', (data) => {
+        opponentPlayer.socket.emit('playerMoveFromServer', data);
+      });
+
+      opponentPlayer.socket.on('playerMoveFromClient', (data) => {
+        currentUser.socket.emit('playerMoveFromServer', data);
+      });
+    } else {
+      currentUser.socket.emit('OpponentNotFound');
     }
   });
 
   socket.on('disconnect', () => {
-    if (gameState.players[socket.id]) {
-      io.emit('opponent_left');
-      resetGame();
-    }
-  });
+    console.log(`Отключение: ${socket.id}`);
+    const currentUser = allUsers[socket.id];
+    if (currentUser) {
+      currentUser.online = false;
+      currentUser.playing = false;
 
-  function checkWinner() {
-    const winPatterns = [
-      [0, 1, 2], [3, 4, 5], [6, 7, 8], // rows
-      [0, 3, 6], [1, 4, 7], [2, 5, 8], // columns
-      [0, 4, 8], [2, 4, 6]             // diagonals
-    ];
+      for (let index = 0; index < allRooms.length; index++) {
+        const { player1, player2 } = allRooms[index];
 
-    for (const pattern of winPatterns) {
-      const [a, b, c] = pattern;
-      if (
-        gameState.board[a] &&
-        gameState.board[a] === gameState.board[b] &&
-        gameState.board[a] === gameState.board[c]
-      ) {
-        return gameState.board[a];
+        if (player1.socket.id === socket.id) {
+          player2.socket.emit('opponentLeftMatch');
+          allRooms.splice(index, 1);
+          break;
+        }
+
+        if (player2.socket.id === socket.id) {
+          player1.socket.emit('opponentLeftMatch');
+          allRooms.splice(index, 1);
+          break;
+        }
       }
     }
-
-    return gameState.board.includes(null) ? null : 'draw';
-  }
-
-  function sendGameState() {
-    io.emit('game_update', {
-      board: gameState.board,
-      currentPlayer: gameState.currentPlayer
-    });
-  }
-
-  function resetGame() {
-    gameState.board = Array(9).fill(null);
-    gameState.currentPlayer = 'X';
-    gameState.players = {};
-    gameState.waitingPlayer = null;
-  }
+  });
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`Сервер запущен на порту ${PORT}`);
+// Запуск сервера
+const PORT = process.env.PORT || 3000;
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`
+  ██╗  ██╗ ██████╗ ███████╗
+  ██║  ██║██╔═══██╗██╔════╝
+  ███████║██║   ██║███████╗
+  ██╔══██║██║   ██║╚════██║
+  ██║  ██║╚██████╔╝███████║
+  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝
+  
+  Сервер запущен на порту ${PORT}
+  Фронтенд: ${frontendPath}
+  `);
+});
+
+// Обработка завершения работы
+process.on('SIGTERM', () => {
+  console.log('Завершение работы сервера...');
+  httpServer.close(() => process.exit(0));
 });
