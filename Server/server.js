@@ -1,10 +1,33 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Автоматическое определение путей к фронтенду
+const frontendPath = (() => {
+  const possiblePaths = [
+    '/opt/render/project/Client/dist',
+    '/opt/render/project/client/dist',
+    '/opt/render/project/src/Client/dist',
+    path.join(__dirname, '../Client/dist'),
+    path.join(__dirname, '../../Client/dist')
+  ];
+
+  for (const path of possiblePaths) {
+    if (fs.existsSync(path)) {
+      console.log('Фронтенд найден по пути:', path);
+      return path;
+    }
+  }
+  throw new Error('Фронтенд не найден');
+})();
 
 const app = express();
 const httpServer = createServer(app);
-const PORT = process.env.PORT || 3000;
 
 const io = new Server(httpServer, {
   cors: {
@@ -13,104 +36,121 @@ const io = new Server(httpServer, {
   }
 });
 
-const gameState = {
-  board: Array(9).fill(null),
-  currentPlayer: 'X',
-  players: {},
-  waitingPlayer: null
-};
+// Состояние игры
+const playersQueue = [];
+const activeRooms = new Map();
 
 io.on('connection', (socket) => {
-  console.log('New connection:', socket.id);
+  console.log(`Новый игрок подключен: ${socket.id}`);
 
-  socket.on('join_game', (playerName) => {
-    if (gameState.waitingPlayer) {
-      // Найден второй игрок
-      gameState.players[socket.id] = {
-        name: playerName,
-        mark: 'O'
-      };
+  socket.on('request_to_play', (playerName) => {
+    // Добавляем проверку на тип данных
+    const name = typeof playerName === 'object' ? playerName.playerName : playerName;
+    
+    if (!name || typeof name !== 'string') {
+      console.error('Неверный формат имени:', playerName);
+      socket.emit('error', 'Неверное имя игрока');
+      return;
+    }
+
+    console.log(`Поиск соперника для: ${name}`);
+
+    if (playersQueue.length > 0) {
+      const opponent = playersQueue.pop();
+      const roomId = `room_${Date.now()}`;
       
-      gameState.players[gameState.waitingPlayer.id].mark = 'X';
-      
-      socket.emit('assign_mark', 'O');
-      io.to(gameState.waitingPlayer.id).emit('assign_mark', 'X');
-      
-      io.emit('game_state', {
-        board: gameState.board,
-        currentPlayer: gameState.currentPlayer
+      activeRooms.set(roomId, {
+        players: [
+          { id: socket.id, name, symbol: 'X' },
+          { id: opponent.id, name: opponent.name, symbol: 'O' }
+        ],
+        moves: []
       });
-      
-      gameState.waitingPlayer = null;
+
+      // Улучшенное логирование
+      console.log(`Создана комната ${roomId} между ${name} (X) и ${opponent.name} (O)`);
+
+      socket.emit('opponent_found', { 
+        opponentName: opponent.name,
+        symbol: 'X',
+        roomId
+      });
+
+      opponent.socket.emit('opponent_found', {
+        opponentName: name,
+        symbol: 'O',
+        roomId
+      });
     } else {
-      // Первый игрок
-      gameState.players[socket.id] = {
-        name: playerName,
-        mark: null
-      };
-      gameState.waitingPlayer = {
+      playersQueue.push({
         id: socket.id,
-        name: playerName
-      };
+        name,
+        socket: socket
+      });
+      socket.emit('waiting_for_opponent');
+      console.log(`Игрок ${name} добавлен в очередь ожидания`);
     }
   });
 
-  socket.on('make_move', (index) => {
-    if (
-      gameState.board[index] === null && 
-      gameState.players[socket.id].mark === gameState.currentPlayer
-    ) {
-      gameState.board[index] = gameState.currentPlayer;
+  socket.on('make_move', (data) => {
+    const { roomId, cellIndex, symbol } = data;
+    const room = activeRooms.get(roomId);
+
+    if (room) {
+      room.moves.push({ cellIndex, symbol });
       
-      // Проверка победителя
-      const winner = checkWinner(gameState.board);
-      if (winner) {
-        io.emit('game_over', winner);
-        resetGame();
-        return;
+      // Отправляем ход сопернику
+      const opponent = room.players.find(p => p.id !== socket.id);
+      if (opponent) {
+        io.to(opponent.id).emit('opponent_move', { cellIndex });
       }
-      
-      // Смена хода
-      gameState.currentPlayer = gameState.currentPlayer === 'X' ? 'O' : 'X';
-      io.emit('game_state', {
-        board: gameState.board,
-        currentPlayer: gameState.currentPlayer
-      });
     }
   });
 
   socket.on('disconnect', () => {
-    if (gameState.players[socket.id]) {
-      io.emit('opponent_left');
-      resetGame();
+    console.log(`Игрок отключился: ${socket.id}`);
+    
+    // Удаляем из очереди
+    const index = playersQueue.findIndex(p => p.id === socket.id);
+    if (index !== -1) {
+      playersQueue.splice(index, 1);
+    }
+
+    // Уведомляем соперника о выходе
+    for (const [roomId, room] of activeRooms) {
+      const player = room.players.find(p => p.id === socket.id);
+      if (player) {
+        const opponent = room.players.find(p => p.id !== socket.id);
+        if (opponent) {
+          io.to(opponent.id).emit('opponent_left');
+        }
+        activeRooms.delete(roomId);
+        break;
+      }
     }
   });
 });
 
-function checkWinner(board) {
-  const lines = [
-    [0, 1, 2], [3, 4, 5], [6, 7, 8], // rows
-    [0, 3, 6], [1, 4, 7], [2, 5, 8], // columns
-    [0, 4, 8], [2, 4, 6]             // diagonals
-  ];
+// Статические файлы фронтенда
+app.use(express.static(frontendPath));
 
-  for (let line of lines) {
-    const [a, b, c] = line;
-    if (board[a] && board[a] === board[b] && board[a] === board[c]) {
-      return board[a];
-    }
-  }
+// API проверки статуса
+app.get('/api/status', (req, res) => {
+  res.json({
+    status: 'running',
+    playersInQueue: playersQueue.length,
+    activeGames: activeRooms.size
+  });
+});
 
-  return board.includes(null) ? null : 'draw';
-}
+// Все остальные запросы → на фронтенд
+app.get('*', (req, res) => {
+  res.sendFile(path.join(frontendPath, 'index.html'));
+});
 
-function resetGame() {
-  gameState.board = Array(9).fill(null);
-  gameState.currentPlayer = 'X';
-  gameState.players = {};
-  gameState.waitingPlayer = null;
-}
-
+const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Сервер запущен на порту ${PORT}`);
+  console.log(`Ожидающие игроки: ${playersQueue.length}`);
+  console.log(`Активные игры: ${activeRooms.size}`);
 });
