@@ -37,7 +37,12 @@ const findFrontendPath = () => {
   process.exit(1);
 };
 
-const frontendPath = findFrontendPath();
+const fs = require('fs');
+const path = require('path');
+let frontendPath = path.join(__dirname, '..', 'Client', 'dist');
+if (!fs.existsSync(frontendPath)) {
+  frontendPath = path.join(__dirname, '..', 'src', 'Client', 'dist');
+}
 
 // Инициализация сервера
 const app = express();
