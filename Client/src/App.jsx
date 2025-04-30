@@ -100,11 +100,7 @@ const App = () => {
 
     setPlayerName(name);
     
-    const newSocket = io("https://your-render-app.onrender.com", {
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000
-    });
+    const newSocket = io(); // или
 
     newSocket.on("connect", () => {
       setPlayOnline(true);
